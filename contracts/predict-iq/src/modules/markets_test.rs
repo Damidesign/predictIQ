@@ -2,7 +2,7 @@
 use crate::errors::ErrorCode;
 use crate::types::{CreatorReputation, MarketStatus, MarketTier, OracleConfig};
 use crate::{PredictIQ, PredictIQClient};
-use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env, String, Vec};
+use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env, String, Vec};
 
 fn setup() -> (Env, PredictIQClient<'static>, Address) {
     let env = Env::default();
@@ -34,7 +34,7 @@ fn test_create_market_basic() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -70,7 +70,7 @@ fn test_create_market_with_single_option_fails() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -105,7 +105,7 @@ fn test_create_market_with_too_many_outcomes() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -130,7 +130,7 @@ fn test_create_market_with_too_many_outcomes() {
 fn test_create_market_deadline_in_past() {
     let (env, client, admin) = setup();
 
-    env.ledger().with_mut(|li| li.timestamp = 1000);
+    env.ledger().set_timestamp(1000);
 
     let options = Vec::from_array(
         &env,
@@ -145,7 +145,7 @@ fn test_create_market_deadline_in_past() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -183,7 +183,7 @@ fn test_create_market_resolution_before_deadline() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -221,7 +221,7 @@ fn test_market_id_increments() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -321,7 +321,7 @@ fn test_market_tiers() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
@@ -391,12 +391,12 @@ fn test_prune_market_before_grace_period() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
 
-    env.ledger().with_mut(|li| li.timestamp = 1000);
+    env.ledger().set_timestamp(1000);
 
     let market_id = client.create_market(
         &admin,
@@ -436,12 +436,12 @@ fn test_prune_market_after_grace_period() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
 
-    env.ledger().with_mut(|li| li.timestamp = 1000);
+    env.ledger().set_timestamp(1000);
 
     let market_id = client.create_market(
         &admin,
@@ -460,7 +460,7 @@ fn test_prune_market_after_grace_period() {
     client.resolve_market(&market_id, &0);
 
     // Advance time past 30 days (2,592,000 seconds)
-    env.ledger().with_mut(|li| li.timestamp = 1000 + 2_592_001);
+    env.ledger().set_timestamp(1000 + 2_592_001);
 
     // Prune should succeed
     let result = client.try_prune_market(&market_id);
@@ -484,7 +484,7 @@ fn test_prune_unresolved_market_fails() {
         feed_id: String::from_str(&env, "test"),
         min_responses: Some(1),
         max_staleness_seconds: 3600,
-        max_confidence_bps: 200,
+        max_confidence_bps: 100,
     };
 
     let token = Address::generate(&env);
