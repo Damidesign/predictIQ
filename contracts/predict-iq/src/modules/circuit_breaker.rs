@@ -10,7 +10,7 @@ fn bump_gov_ttl(e: &Env) {
 }
 
 pub fn set_state(e: &Env, state: CircuitBreakerState) -> Result<(), ErrorCode> {
-    admin::require_admin(e)?;
+    admin::require_market_admin(e)?;
     e.storage()
         .persistent()
         .set(&ConfigKey::CircuitBreakerState, &state);

@@ -7,7 +7,7 @@ const FAILED_MARKET_THRESHOLD_BPS: i128 = 7500; // 75% vote required to cancel
 
 /// Admin override to cancel a market
 pub fn cancel_market_admin(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
-    admin::require_admin(e)?;
+    admin::require_market_admin(e)?;
     
     let mut market = markets::get_market(e, market_id).ok_or(ErrorCode::MarketNotFound)?;
     
