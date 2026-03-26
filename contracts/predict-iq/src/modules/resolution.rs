@@ -53,6 +53,8 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
             // No dispute filed, finalize with oracle result
             let winning_outcome = market.winning_outcome.unwrap();
             market.status = MarketStatus::Resolved;
+            // Populate resolved_at so prune_market can enforce the 30-day grace period
+            market.resolved_at = Some(e.ledger().timestamp());
             markets::update_market(e, market);
             
             e.events().publish(
@@ -63,9 +65,11 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
             Ok(())
         },
         MarketStatus::Disputed => {
-            // Check if 72h voting period has passed
-            let dispute_ts = market.dispute_timestamp.ok_or(ErrorCode::MarketNotDisputed)?;
-            if e.ledger().timestamp() < dispute_ts + VOTING_PERIOD_SECONDS {
+            // The dispute window opens at pending_resolution_timestamp; voting period
+            // begins immediately after the 24h dispute window closes.
+            let pending_ts = market.pending_resolution_timestamp.ok_or(ErrorCode::ResolutionNotReady)?;
+            let dispute_window_end = pending_ts + DISPUTE_WINDOW_SECONDS;
+            if e.ledger().timestamp() < dispute_window_end + VOTING_PERIOD_SECONDS {
                 return Err(ErrorCode::VotingNotStarted);
             }
             
@@ -74,6 +78,8 @@ pub fn finalize_resolution(e: &Env, market_id: u64) -> Result<(), ErrorCode> {
             
             market.status = MarketStatus::Resolved;
             market.winning_outcome = Some(winning_outcome);
+            // Populate resolved_at so prune_market can enforce the 30-day grace period
+            market.resolved_at = Some(e.ledger().timestamp());
             markets::update_market(e, market);
             
             e.events().publish(
