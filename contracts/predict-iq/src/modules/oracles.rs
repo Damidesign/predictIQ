@@ -1,7 +1,8 @@
 use crate::errors::ErrorCode;
 use crate::types::OracleConfig;
-use soroban_sdk::{contracttype, Env, Symbol};
-use soroban_sdk::{contracttype, symbol_short, Env, Symbol};
+use soroban_sdk::{contracttype, symbol_short, Env};
+
+const BPS_DENOMINATOR: u64 = 10_000;
 
 /// Issue #9: Key now includes oracle_id to support multi-oracle aggregation.
 #[contracttype]
@@ -27,6 +28,10 @@ pub fn fetch_pyth_price(_e: &Env, _config: &OracleConfig) -> Result<PythPrice, E
     Err(ErrorCode::OracleFailure)
 }
 
+fn abs_price_to_u64(price: i64) -> u64 {
+    price.saturating_abs() as u64
+}
+
 /// Issue #41: Use saturating_abs to avoid overflow on i64::MIN.
 /// Issue #49: publish_time is now u64 — no signed/unsigned mixing.
 pub fn validate_price(e: &Env, price: &PythPrice, config: &OracleConfig) -> Result<(), ErrorCode> {
@@ -39,12 +44,10 @@ pub fn validate_price(e: &Env, price: &PythPrice, config: &OracleConfig) -> Resu
     }
 
     // Check confidence: conf should be < max_confidence_bps% of price
-    let price_abs = if price.price < 0 {
-        -price.price
-    } else {
-        price.price
-    } as u64;
-    let max_conf = (price_abs * config.max_confidence_bps as u64) / 10000;
+    let price_abs = abs_price_to_u64(price.price);
+    let max_conf = price_abs
+        .saturating_mul(config.max_confidence_bps as u64)
+        / BPS_DENOMINATOR;
 
     if price.conf > max_conf {
         return Err(ErrorCode::ConfidenceTooLow);
@@ -108,4 +111,20 @@ pub fn set_oracle_result(e: &Env, market_id: u64, outcome: u32) -> Result<(), Er
 
 pub fn verify_oracle_health(_e: &Env, config: &OracleConfig) -> bool {
     !config.feed_id.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::abs_price_to_u64;
+
+    #[test]
+    fn abs_price_handles_i64_min_without_panic() {
+        assert_eq!(abs_price_to_u64(i64::MIN), i64::MAX as u64);
+    }
+
+    #[test]
+    fn abs_price_preserves_normal_values() {
+        assert_eq!(abs_price_to_u64(-123), 123);
+        assert_eq!(abs_price_to_u64(456), 456);
+    }
 }
