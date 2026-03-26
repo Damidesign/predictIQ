@@ -1,6 +1,6 @@
 use crate::errors::ErrorCode;
 use crate::types::OracleConfig;
-use soroban_sdk::{contracttype, symbol_short, Env, Symbol};
+use soroban_sdk::{contracttype, Env};
 
 #[contracttype]
 pub enum OracleData {
@@ -62,11 +62,9 @@ pub fn resolve_with_pyth(e: &Env, market_id: u64, config: &OracleConfig) -> Resu
         &(price.publish_time as u64),
     );
 
-    // Publish event
-    e.events().publish(
-        (Symbol::new(e, "oracle_resolution"), market_id),
-        (outcome, price.price, price.conf),
-    );
+    // Publish event using centralized emitter
+    let oracle_addr = e.current_contract_address();
+    crate::modules::events::emit_oracle_resolved(e, market_id, oracle_addr, outcome);
 
     Ok(outcome)
 }

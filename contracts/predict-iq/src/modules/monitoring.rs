@@ -21,12 +21,12 @@ pub fn track_error(e: &Env) {
         // Automatically open the circuit breaker
         e.storage().persistent().set(
             &crate::types::ConfigKey::CircuitBreakerState,
-            &CircuitBreakerState::Open,
+            &crate::types::CircuitBreakerState::Open,
         );
 
-        // Emit standardized circuit breaker event using soroban_sdk
-        use soroban_sdk::symbol_short;
-        e.events().publish((symbol_short!("cb_auto"),), count);
+        // Emit standardized circuit breaker event using centralized emitter
+        let contract_addr = e.current_contract_address();
+        crate::modules::events::emit_circuit_breaker_auto(e, contract_addr, count);
     }
 }
 

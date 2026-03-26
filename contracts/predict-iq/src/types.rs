@@ -26,10 +26,10 @@ pub struct Market {
     pub payout_mode: PayoutMode, // Resolution-time mode flag; payouts are currently claimed via claim_winnings
     pub tier: MarketTier,
     pub creation_deposit: i128,
-    pub parent_id: u64,          // 0 means no parent (independent market)
-    pub parent_outcome_idx: u32, // Required outcome of parent market
-    pub resolved_at: Option<u64>, // Timestamp when market was resolved (for TTL pruning)
-    pub token_address: Address,   // Token used for betting
+    pub parent_id: u64,                 // 0 means no parent (independent market)
+    pub parent_outcome_idx: u32,        // Required outcome of parent market
+    pub resolved_at: Option<u64>,       // Timestamp when market was resolved (for TTL pruning)
+    pub token_address: Address,         // Token used for betting
     pub outcome_stakes: Map<u32, i128>, // Stake per outcome
     pub pending_resolution_timestamp: Option<u64>, // Timestamp when resolution was initiated
     pub dispute_snapshot_ledger: Option<u32>, // Ledger sequence for snapshot voting
@@ -161,5 +161,5 @@ pub const PRUNE_GRACE_PERIOD: u64 = 2_592_000; // 30 days in seconds
 /// Governance TTL constants — much longer than market data because governance
 /// processes (upgrades, guardian votes) can span months of inactivity.
 /// ~90 days expressed in ledgers (~5 seconds per ledger).
-pub const GOV_TTL_LOW_THRESHOLD: u32 = 1_555_200;  // ~90 days
+pub const GOV_TTL_LOW_THRESHOLD: u32 = 1_555_200; // ~90 days
 pub const GOV_TTL_HIGH_THRESHOLD: u32 = 3_110_400; // ~180 days

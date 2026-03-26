@@ -146,9 +146,7 @@ pub fn claim_winnings(
         return Err(ErrorCode::MarketNotResolved);
     }
 
-    let winning_outcome = market
-        .winning_outcome
-        .ok_or(ErrorCode::MarketNotResolved)?;
+    let winning_outcome = market.winning_outcome.ok_or(ErrorCode::MarketNotResolved)?;
 
     let bet_key = DataKey::Bet(market_id, bettor.clone());
     let claimed_key = DataKey::Claimed(market_id, bettor.clone());
@@ -187,7 +185,14 @@ pub fn claim_winnings(
 
     // Emit standardized RewardsClaimed event
     // Topics: [RewardsClaimed, market_id, bettor]
-    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, winnings, token_address, false);
+    crate::modules::events::emit_rewards_claimed(
+        e,
+        market_id,
+        bettor,
+        winnings,
+        token_address,
+        false,
+    );
 
     Ok(winnings)
 }
@@ -228,12 +233,21 @@ pub fn withdraw_refund(
     // Update market accounting to maintain accuracy
     market.total_staked = market.total_staked.saturating_sub(refund_amount);
     let outcome_stake = market.outcome_stakes.get(bet_outcome).unwrap_or(0);
-    market.outcome_stakes.set(bet_outcome, outcome_stake.saturating_sub(refund_amount));
+    market
+        .outcome_stakes
+        .set(bet_outcome, outcome_stake.saturating_sub(refund_amount));
     markets::update_market(e, market);
 
     // Emit standardized RewardsClaimed event (refund variant)
     // Topics: [RewardsClaimed, market_id, bettor]
-    crate::modules::events::emit_rewards_claimed(e, market_id, bettor, refund_amount, token_address, true);
+    crate::modules::events::emit_rewards_claimed(
+        e,
+        market_id,
+        bettor,
+        refund_amount,
+        token_address,
+        true,
+    );
 
     Ok(refund_amount)
 }
