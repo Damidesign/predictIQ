@@ -196,6 +196,40 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
         working-directory: contracts/predict-iq
 
+  oracle-quality-gate:
+    name: Oracle Module — Clippy + Warnings-as-Errors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+          components: clippy
+
+      - name: Clippy (deny warnings) — oracle module
+        env:
+          RUSTFLAGS: -D warnings
+        run: >
+          cargo clippy
+          --package predict-iq
+          --all-features
+          -- -D warnings
+        working-directory: contracts/predict-iq
+
+      - name: Build (deny warnings) — contract crate
+        env:
+          RUSTFLAGS: -D warnings
+        run: cargo build --package predict-iq --all-features
+        working-directory: contracts/predict-iq
+
+      - name: Run oracle tests
+        run: cargo test --package predict-iq --lib oracles
+        working-directory: contracts/predict-iq
+
   format:
     name: Code Formatting
     runs-on: ubuntu-latest
@@ -293,6 +327,7 @@ jobs:
       - coverage
       - security-audit
       - clippy
+      - oracle-quality-gate
       - format
       - snapshot-tests
       - build-optimized

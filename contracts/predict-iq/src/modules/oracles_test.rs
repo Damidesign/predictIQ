@@ -28,8 +28,6 @@
 //! - `test_confidence_rounding_boundary_conditions`: Documents exact rounding behavior
 
 use super::oracles::*;
-use crate::errors::ErrorCode;
-use crate::types::OracleConfig;
 use soroban_sdk::{testutils::Address as _, Address, Env, String};
 
 fn test_config(e: &Env) -> OracleConfig {
