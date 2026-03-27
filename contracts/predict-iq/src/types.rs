@@ -118,6 +118,7 @@ pub enum ConfigKey {
     GovernanceToken,
     MaxPushPayoutWinners,
     PendingGuardianRemoval,
+    TimelockDuration,
 }
 
 #[contracttype]
@@ -147,12 +148,13 @@ pub struct PendingUpgrade {
 }
 
 // Constants for upgrade governance
-pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
-pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
-pub const UPGRADE_COOLDOWN_DURATION: u64 = 7 * 24 * 60 * 60; // 7 days in seconds
 /// Issue #13: Default timelock — 48 hours. Overridable via ConfigKey::TimelockDuration.
 pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60;
 pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51;
+pub const UPGRADE_COOLDOWN_DURATION: u64 = 7 * 24 * 60 * 60; // 7 days in seconds
+/// Allowed range for configurable timelock: 6 hours – 7 days.
+pub const TIMELOCK_MIN_SECONDS: u64 = 6 * 60 * 60;
+pub const TIMELOCK_MAX_SECONDS: u64 = 7 * 24 * 60 * 60;
 
 // TTL Management Constants (in ledgers, ~5 seconds per ledger)
 pub const TTL_LOW_THRESHOLD: u32 = 17_280;   // ~1 day
