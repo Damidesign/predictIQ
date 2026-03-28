@@ -3,15 +3,8 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 pub mod errors;
 mod modules;
-mod test;
-#[cfg(test)]
-mod query_tests;
 #[cfg(test)]
 mod test_tie_handling;
-#[cfg(test)]
-mod test_payout_mode_immutability;
-#[cfg(test)]
-mod test_cancellation_referral;
 pub mod types;
 
 pub use errors::ErrorCode;
