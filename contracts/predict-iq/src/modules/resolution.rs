@@ -187,12 +187,8 @@ pub fn admin_fallback_resolution(
 }
 
 /// Single-pass O(n) tally. n is bounded by MAX_OUTCOMES_PER_MARKET (32).
-///
-/// Uses `Option<u32>` for the leading outcome so that outcome 0 is never
-/// implicitly treated as the winner when it received zero votes.  The previous
-/// `max_outcome = 0u32` default caused a silent "unused tally" path: outcome 0
-/// was returned as the leader even when its tally was 0 and another outcome
-/// had the actual plurality.
+/// Returns `NoMajorityReached` if no single outcome holds ≥ 60% of votes,
+/// or if two or more outcomes share the highest tally (tie).
 fn calculate_voting_outcome(e: &Env, market: &crate::types::Market) -> Result<u32, ErrorCode> {
     let num_outcomes = market.options.len();
 
@@ -203,15 +199,17 @@ fn calculate_voting_outcome(e: &Env, market: &crate::types::Market) -> Result<u3
     let mut total_votes: i128 = 0;
     let mut max_outcome: Option<u32> = None;
     let mut max_votes: i128 = 0;
+    let mut tie: bool = false;
 
     for outcome in 0..num_outcomes {
         let tally = voting::get_tally(e, market.id, outcome);
         total_votes += tally;
-        // Strictly greater-than: ties are broken in favour of the lower index,
-        // which is deterministic and consistent with the loop order.
         if tally > max_votes {
             max_votes = tally;
             max_outcome = Some(outcome);
+            tie = false;
+        } else if tally == max_votes && max_votes > 0 {
+            tie = true;
         }
     }
 
@@ -220,8 +218,11 @@ fn calculate_voting_outcome(e: &Env, market: &crate::types::Market) -> Result<u3
         return Err(ErrorCode::NoMajorityReached);
     }
 
-    // `max_outcome` is `Some` here because total_votes > 0 guarantees at least
-    // one outcome had tally > 0, which satisfies the `tally > max_votes` branch.
+    // Two or more outcomes share the highest tally — no deterministic winner.
+    if tie {
+        return Err(ErrorCode::NoMajorityReached);
+    }
+
     let winner = max_outcome.ok_or(ErrorCode::NoMajorityReached)?;
 
     // Check if the leading outcome exceeds the 60% supermajority threshold.
