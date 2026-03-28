@@ -1,6 +1,8 @@
 use std::{
-    collections::HashSet,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -36,6 +38,7 @@ pub struct BlockchainClient {
 #[derive(Default)]
 struct MonitoringState {
     watched_txs: RwLock<HashSet<String>>,
+    tasks_started: AtomicBool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -724,6 +727,11 @@ impl BlockchainClient {
     }
 
     pub fn start_background_tasks(self: Arc<Self>) {
+        if self.monitor.tasks_started.swap(true, Ordering::SeqCst) {
+            tracing::warn!("background tasks already started; skipping duplicate invocation");
+            return;
+        }
+
         let sync_client = self.clone();
         tokio::spawn(async move {
             sync_client.run_sync_worker().await;
