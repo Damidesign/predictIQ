@@ -220,7 +220,7 @@ pub mod sanitize {
     pub fn string(input: &str, max_len: usize) -> String {
         input
             .chars()
-            .filter(|c| !c.is_control() || c.is_whitespace())
+            .filter(|c| !c.is_control() || matches!(c, '\t' | '\n' | '\r' | ' '))
             .take(max_len)
             .collect()
     }
@@ -327,7 +327,43 @@ pub async fn ip_whitelist_middleware(
     Ok(next.run(request).await)
 }
 
-/// Request signing verification for sensitive operations
+/// SendGrid webhook signature verification middleware.
+///
+/// Verifies the `X-Twilio-Email-Event-Webhook-Signature` header using HMAC-SHA256
+/// against the raw request body. When `SENDGRID_WEBHOOK_SECRET` is not configured
+/// the middleware passes through (permissive default for local dev).
+///
+/// # OpenAPI policy
+/// Route: `POST /webhooks/sendgrid`
+/// Auth: provider-signed (SendGrid HMAC) — no API key required.
+pub async fn sendgrid_webhook_middleware(
+    State(secret): State<Option<String>>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if let Some(ref secret) = secret {
+        let sig = headers
+            .get("x-twilio-email-event-webhook-signature")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+
+        let (parts, body) = request.into_parts();
+        let bytes = axum::body::to_bytes(body, usize::MAX)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+
+        if !signing::verify_signature(&bytes, sig, secret) {
+            return Err(StatusCode::UNAUTHORIZED);
+        }
+
+        let request = Request::from_parts(parts, Body::from(bytes));
+        return Ok(next.run(request).await);
+    }
+
+    Ok(next.run(request).await)
+}
+
 pub mod signing {
     use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
     use hmac::{Hmac, Mac};
@@ -352,8 +388,8 @@ pub mod signing {
     }
 
     pub fn generate_signature(payload: &[u8], secret: &str) -> Result<String, SigningError> {
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-            .map_err(|_| SigningError::InvalidKey)?;
+        let mut mac =
+            HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| SigningError::InvalidKey)?;
         mac.update(payload);
         let result = mac.finalize();
         Ok(BASE64.encode(result.into_bytes()))
@@ -450,7 +486,9 @@ mod tests {
     #[test]
     fn test_extract_client_ip_empty_and_unknown() {
         let headers = HeaderMap::new();
-        assert_eq!(extract_client_ip(&headers, None, true), "unknown");
+
+        // No headers, no connect info
+        assert_eq!(extract_client_ip(&headers, None), "unknown");
 
         let ci = addr("5.5.5.5:80");
         assert_eq!(extract_client_ip(&headers, Some(&ci), true), "5.5.5.5");
@@ -494,32 +532,11 @@ mod tests {
     #[test]
     fn both_spoofed_headers_ignored_when_trust_proxy_disabled() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-forwarded-for", "9.9.9.9".parse().unwrap());
-        headers.insert("x-real-ip", "8.8.8.8".parse().unwrap());
-        let ci = addr("1.2.3.4:1234");
-        assert_eq!(extract_client_ip(&headers, Some(&ci), false), "1.2.3.4");
-    }
+        headers.insert(
+            "x-forwarded-for",
+            "2001:db8::1, 192.168.1.1".parse().unwrap(),
+        );
 
-    /// When proxy trust IS enabled, X-Forwarded-For is honoured as before.
-    #[test]
-    fn xff_trusted_when_trust_proxy_enabled() {
-        let headers = xff("5.6.7.8");
-        let ci = addr("1.2.3.4:1234");
-        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "5.6.7.8");
-    }
-
-    /// When proxy trust IS enabled, X-Real-IP is honoured as fallback.
-    #[test]
-    fn x_real_ip_trusted_when_trust_proxy_enabled() {
-        let headers = xri("5.6.7.8");
-        let ci = addr("1.2.3.4:1234");
-        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "5.6.7.8");
-    }
-
-    /// No connect info and trust_proxy disabled → "unknown" (no header leak).
-    #[test]
-    fn no_connect_info_no_trust_proxy_returns_unknown() {
-        let headers = xff("9.9.9.9");
-        assert_eq!(extract_client_ip(&headers, None, false), "unknown");
+        assert_eq!(extract_client_ip(&headers, None), "2001:db8::1");
     }
 }

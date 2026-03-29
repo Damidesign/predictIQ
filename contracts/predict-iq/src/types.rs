@@ -55,8 +55,11 @@ pub enum MarketTier {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CreatorReputation {
-    pub score: u32, // Reputation score (0-1000+)
+pub enum CreatorReputation {
+    None,
+    Basic,
+    Pro,
+    Institutional,
 }
 
 #[contracttype]
@@ -108,6 +111,8 @@ pub enum ConfigKey {
     Admin,
     GuardianAccount,
     BaseFee,
+    /// Optional dedicated account allowed to withdraw protocol fees (Issue #26).
+    FeeAdmin,
     CircuitBreakerState,
     CreationDeposit,
     GuardianSet,
@@ -120,6 +125,15 @@ pub enum ConfigKey {
     MinimumBetAmount,
     /// Issue #8: Configurable dispute window duration in seconds.
     DisputeWindow,
+    /// Issue #170: Configurable voting period duration in seconds.
+    VotingPeriod,
+    /// Issue #170: Configurable majority threshold in basis points.
+    MajorityThreshold,
+    /// Effective upgrade timelock duration in seconds (governance override).
+    /// Issue #403: Added missing variant referenced by governance module.
+    TimelockDuration,
+    /// Issue #406: Status index key — maps (status_tag, market_id) for O(1) status queries.
+    StatusIndex(u32, u64),
 }
 
 #[contracttype]
@@ -148,8 +162,28 @@ pub struct PendingUpgrade {
     pub votes_against: Vec<Address>,
 }
 
+/// Issue #404: Pending guardian removal proposal (was missing from types.rs).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingGuardianRemoval {
+    pub target_guardian: Address,
+    pub initiated_at: u64,
+    pub votes_for: Vec<Address>,
+}
+
+/// Issue #404: Vote counts surfaced for upgrade proposals (`get_upgrade_votes`).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UpgradeStats {
+    pub votes_for: u32,
+    pub votes_against: u32,
+}
+
 /// Issue #13: Default timelock — 48 hours.
 pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60;
+/// Issue #403: Bounds for configurable upgrade timelock (6 hours … 7 days).
+pub const TIMELOCK_MIN_SECONDS: u64 = 6 * 60 * 60;
+pub const TIMELOCK_MAX_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51;
 pub const UPGRADE_COOLDOWN_DURATION: u64 = 7 * 24 * 60 * 60; // 7 days
 
@@ -172,3 +206,14 @@ pub const GOV_TTL_HIGH_THRESHOLD: u32 = 3_110_400; // ~180 days
 
 /// Issue #54: Reserved sentinel index for cancellation votes, distinct from any valid outcome index.
 pub const CANCEL_OUTCOME_INDEX: u32 = u32::MAX;
+
+/// Maps MarketStatus to a stable u32 tag for use in StatusIndex keys.
+pub fn status_tag(status: &MarketStatus) -> u32 {
+    match status {
+        MarketStatus::Active => 0,
+        MarketStatus::PendingResolution => 1,
+        MarketStatus::Disputed => 2,
+        MarketStatus::Resolved => 3,
+        MarketStatus::Cancelled => 4,
+    }
+}

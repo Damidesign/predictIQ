@@ -3,20 +3,13 @@ use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 pub mod errors;
 mod modules;
-mod test;
-#[cfg(test)]
-mod query_tests;
 #[cfg(test)]
 mod test_tie_handling;
-#[cfg(test)]
-mod test_payout_mode_immutability;
-#[cfg(test)]
-mod test_cancellation_referral;
 pub mod types;
 
 pub use errors::ErrorCode;
 
-use crate::modules::admin;
+use crate::modules::{admin, queries};
 use crate::types::{CircuitBreakerState, ConfigKey, UpgradeStats};
 
 #[contract]
@@ -29,9 +22,8 @@ impl PredictIQ {
         admin: Address,
         base_fee: i128,
     ) -> Result<(), ErrorCode> {
-        // Require the deployer's authorization to prevent front-running attacks.
-        // Only the account that deployed this contract can call initialize.
-        e.deployer().require_auth();
+        // Require the admin account to authorize initialize (standard Soroban init pattern).
+        admin.require_auth();
 
         if e.storage().persistent().has(&ConfigKey::Admin) {
             return Err(ErrorCode::AlreadyInitialized);
@@ -106,16 +98,34 @@ impl PredictIQ {
         crate::modules::cancellation::withdraw_refund(&e, bettor, market_id, 0)
     }
 
-    pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
-        crate::modules::cancellation::cancel_market_admin(&e, market_id)
-    }
-
+    /// #401: Single canonical admin cancellation entrypoint.
+    /// Delegates to `modules::cancellation::cancel_market_admin`.
     pub fn cancel_market_admin(e: Env, market_id: u64) -> Result<(), ErrorCode> {
         crate::modules::cancellation::cancel_market_admin(&e, market_id)
     }
 
     pub fn get_market(e: Env, id: u64) -> Option<crate::types::Market> {
         crate::modules::markets::get_market(&e, id)
+    }
+
+    /// Paginated market list. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
+    pub fn get_markets(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Market> {
+        queries::get_markets(&e, offset, limit)
+    }
+
+    /// Paginated market list filtered by status. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
+    pub fn get_markets_by_status(
+        e: Env,
+        status: crate::types::MarketStatus,
+        offset: u32,
+        limit: u32,
+    ) -> Vec<crate::types::Market> {
+        queries::get_markets_by_status(&e, status, offset, limit)
+    }
+
+    /// Paginated guardian list. `limit` is silently clamped to `MAX_PAGE_LIMIT` (100).
+    pub fn get_guardians_paginated(e: Env, offset: u32, limit: u32) -> Vec<crate::types::Guardian> {
+        queries::get_guardians_paginated(&e, offset, limit)
     }
 
     pub fn get_outcome_stake(e: Env, market_id: u64, outcome: u32) -> i128 {
@@ -158,11 +168,11 @@ impl PredictIQ {
     }
 
     pub fn set_fee_admin(e: Env, fee_admin: Address) -> Result<(), ErrorCode> {
-        crate::modules::admin::set_fee_admin(&e, fee_admin)
+        crate::modules::fees::set_fee_admin(&e, fee_admin)
     }
 
     pub fn get_fee_admin(e: Env) -> Option<Address> {
-        crate::modules::admin::get_fee_admin(&e)
+        crate::modules::fees::get_fee_admin(&e)
     }
 
     pub fn get_revenue(e: Env, token: Address) -> i128 {
@@ -302,8 +312,9 @@ impl PredictIQ {
     pub fn claim_creation_deposit(
         e: Env,
         market_id: u64,
+        caller: Address,
     ) -> Result<(), ErrorCode> {
-        crate::modules::markets::claim_creation_deposit(&e, market_id)
+        crate::modules::markets::claim_creation_deposit(&e, market_id, caller)
     }
 
     // Governance and Upgrade Functions

@@ -52,7 +52,7 @@ pub fn fetch_pyth_price(e: &Env, config: &OracleConfig) -> Result<PythPrice, Err
     // The Pyth Soroban contract's `get_price(feed_id: BytesN<32>)` returns
     // a struct with fields (price: i64, conf: u64, expo: i32, publish_time: i64).
     // We map it to our internal PythPrice.
-    let raw: Result<Result<RawPythPrice, _>, _> = e.try_invoke_contract(
+    let raw = e.try_invoke_contract::<RawPythPrice, ErrorCode>(
         &config.oracle_address,
         &Symbol::new(e, "get_price"),
         soroban_sdk::vec![e, feed_id.into()],
@@ -194,6 +194,12 @@ pub fn get_oracle_result(e: &Env, market_id: u64, oracle_id: u32) -> Option<u32>
 }
 
 pub fn set_oracle_result(e: &Env, market_id: u64, oracle_id: u32, outcome: u32) -> Result<(), ErrorCode> {
+    let market = crate::modules::markets::get_market(e, market_id)
+        .ok_or(ErrorCode::MarketNotFound)?;
+    if outcome >= market.options.len() {
+        return Err(ErrorCode::InvalidOutcome);
+    }
+
     e.storage()
         .persistent()
         .set(&OracleData::Result(market_id, oracle_id), &outcome);
@@ -202,8 +208,10 @@ pub fn set_oracle_result(e: &Env, market_id: u64, oracle_id: u32, outcome: u32) 
         &e.ledger().timestamp(),
     );
 
-    let oracle_addr = e.current_contract_address();
-    crate::modules::events::emit_oracle_result_set(e, market_id, oracle_addr, outcome);
+    // Issue #405: emit the real oracle source address (from OracleConfig) and oracle_id,
+    // not the current contract address.
+    let oracle_source = market.oracle_config.oracle_address.clone();
+    crate::modules::events::emit_oracle_result_set(e, market_id, oracle_id, oracle_source, outcome);
 
     Ok(())
 }

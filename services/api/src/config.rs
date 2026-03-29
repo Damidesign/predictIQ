@@ -47,9 +47,7 @@ pub struct Config {
     pub api_keys: Vec<String>,
     pub admin_whitelist_ips: Vec<IpAddr>,
     pub request_signing_secret: Option<String>,
-    /// When true, forwarding headers (X-Forwarded-For, X-Real-IP) are trusted.
-    /// Must only be enabled when the service sits behind a known trusted proxy.
-    pub trust_proxy: bool,
+    pub sendgrid_webhook_secret: Option<String>,
 }
 
 impl Config {
@@ -141,9 +139,7 @@ impl Config {
                 })
                 .unwrap_or_default(),
             request_signing_secret: env::var("REQUEST_SIGNING_SECRET").ok(),
-            trust_proxy: env::var("TRUST_PROXY")
-                .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
-                .unwrap_or(false),
+            sendgrid_webhook_secret: env::var("SENDGRID_WEBHOOK_SECRET").ok(),
         }
     }
 

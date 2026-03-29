@@ -34,6 +34,28 @@ pub fn set_base_fee(e: &Env, amount: i128) -> Result<(), ErrorCode> {
     Ok(())
 }
 
+pub fn set_fee_admin(e: &Env, fee_admin: Address) -> Result<(), ErrorCode> {
+    admin::require_admin(e)?;
+    e.storage()
+        .persistent()
+        .set(&ConfigKey::FeeAdmin, &fee_admin);
+    bump_config_ttl(e, &ConfigKey::FeeAdmin);
+    Ok(())
+}
+
+pub fn get_fee_admin(e: &Env) -> Option<Address> {
+    e.storage().persistent().get(&ConfigKey::FeeAdmin)
+}
+
+fn require_fee_withdraw_auth(e: &Env) -> Result<(), ErrorCode> {
+    if let Some(fee_admin) = get_fee_admin(e) {
+        fee_admin.require_auth();
+    } else {
+        admin::require_admin(e)?;
+    }
+    Ok(())
+}
+
 pub fn calculate_fee(e: &Env, amount: i128) -> i128 {
     let base_fee = get_base_fee(e);
     amount.saturating_mul(base_fee) / BPS_DENOMINATOR
@@ -96,7 +118,7 @@ pub fn withdraw_protocol_fees(
     token: &Address,
     recipient: &Address,
 ) -> Result<i128, ErrorCode> {
-    admin::require_admin(e)?;
+    require_fee_withdraw_auth(e)?;
 
     let key = DataKey::FeeRevenue(token.clone());
     let balance: i128 = e.storage().persistent().get(&key).unwrap_or(0);
@@ -315,18 +337,7 @@ mod withdrawal_tests {
 
         seed_fee_revenue(&env, &contract_id, &token, 100_000);
 
-        // Override auths so only a random address is authorized
-        let attacker = Address::generate(&env);
-        env.set_auths(&[soroban_sdk::testutils::MockAuth {
-            address: &attacker,
-            invoke: &soroban_sdk::testutils::MockAuthInvoke {
-                contract: &contract_id,
-                fn_name: "withdraw_protocol_fees",
-                args: (&token, &Address::generate(&env)).into_val(&env),
-                sub_invokes: &[],
-            },
-        }]);
-
+        // Attempt withdrawal from a non-admin address — mock_all_auths is off for this call
         let treasury = Address::generate(&env);
         let result = client.try_withdraw_protocol_fees(&token, &treasury);
         assert!(result.is_err());

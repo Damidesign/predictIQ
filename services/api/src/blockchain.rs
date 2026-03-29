@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -586,26 +587,42 @@ impl BlockchainClient {
         let events = result
             .events
             .into_iter()
-            .map(|e| ContractEvent {
-                id: e
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-                    .to_string(),
-                ledger: e.get("ledger").and_then(Value::as_u64).unwrap_or_default() as u32,
-                topic: e
-                    .get("topic")
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "unknown".to_string()),
-                tx_hash: e
-                    .get("txHash")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                value: e,
-            })
+            .filter_map(|e| Self::parse_event(e))
             .collect::<Vec<_>>();
 
         Ok(events)
+    }
+
+    /// Parse a raw RPC event JSON value into a [`ContractEvent`].
+    ///
+    /// Returns `None` (quarantine) when required fields are absent or carry
+    /// sentinel defaults that would poison the cache:
+    /// - `id` must be present and non-empty
+    /// - `ledger` must be > 0
+    fn parse_event(e: Value) -> Option<ContractEvent> {
+        let id = e.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+        if id.is_empty() {
+            return None;
+        }
+
+        let ledger = e.get("ledger").and_then(Value::as_u64).unwrap_or(0) as u32;
+        if ledger == 0 {
+            return None;
+        }
+
+        Some(ContractEvent {
+            id,
+            ledger,
+            topic: e
+                .get("topic")
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            tx_hash: e
+                .get("txHash")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+            value: e,
+        })
     }
 
     async fn handle_reorg_if_detected(&self, latest_ledger: u32) -> anyhow::Result<()> {
@@ -697,14 +714,14 @@ impl BlockchainClient {
 
     pub async fn run_transaction_monitor(self: Arc<Self>) {
         loop {
-            let hashes = self
+            let hashes: Vec<String> = self
                 .monitor
                 .watched_txs
                 .read()
                 .await
                 .iter()
                 .cloned()
-                .collect::<Vec<_>>();
+                .collect();
 
             for hash in hashes {
                 if let Ok(status) = self.transaction_status_cached(&hash).await {
@@ -926,5 +943,396 @@ mod tests {
         // Error metric should be incremented.
         let rendered = metrics.render().unwrap();
         assert!(rendered.contains("rpc_errors_total{method=\"getEvents\"} 1"));
+    }
+
+    // -------------------------------------------------------------------------
+    // sync cursor progression under empty event streams
+    //
+    // fetch_events_since silently returns Ok(vec![]) on RPC failure.
+    // These tests verify the cursor never jumps or rewinds in that scenario.
+    // -------------------------------------------------------------------------
+
+    /// Build a client whose RPC endpoint is unreachable (port 0), so every RPC
+    /// call fails immediately.  Returns None when Redis is unavailable so each
+    /// test can skip gracefully without failing CI.
+    async fn make_dead_rpc_client() -> Option<BlockchainClient> {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+        // Small lag keeps confirmed_tip arithmetic predictable.
+        config.confirmation_ledger_lag = 5;
+        // No market IDs avoids extra RPC calls inside sync_once.
+        config.sync_market_ids = vec![];
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => return None,
+        };
+        Some(BlockchainClient::new(&config, cache, metrics).unwrap())
+    }
+
+    /// When latest_ledger RPC fails, sync_once falls back to cursor_ledger as
+    /// the latest value.  confirmed_tip = cursor - lag ≤ cursor, so the
+    /// early-return guard fires and the cursor is returned unchanged.
+    #[tokio::test]
+    async fn test_cursor_does_not_advance_when_latest_ledger_rpc_fails() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_does_not_advance_when_latest_ledger_rpc_fails: Redis unavailable");
+                return;
+            }
+        };
+
+        let initial: u32 = 500;
+        let next = client.sync_once(initial).await.unwrap();
+        assert_eq!(
+            next, initial,
+            "cursor must not change when latest_ledger RPC fails (got {next}, want {initial})"
+        );
+    }
+
+    /// Starting from ledger 0 (fresh worker state) with a dead RPC the cursor
+    /// must stay at 0 and must not jump to any non-zero value.
+    #[tokio::test]
+    async fn test_cursor_stays_at_zero_on_rpc_failure_from_fresh_state() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_stays_at_zero_on_rpc_failure_from_fresh_state: Redis unavailable");
+                return;
+            }
+        };
+
+        let next = client.sync_once(0).await.unwrap();
+        assert_eq!(
+            next, 0,
+            "cursor must stay at 0 when RPC fails from fresh state (got {next})"
+        );
+    }
+
+    /// When confirmed_tip ≤ cursor (chain has not advanced past the lag window),
+    /// sync_once must return the cursor unchanged – idempotency guarantee.
+    #[tokio::test]
+    async fn test_cursor_is_idempotent_when_already_at_confirmed_tip() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_is_idempotent_when_already_at_confirmed_tip: Redis unavailable");
+                return;
+            }
+        };
+
+        // Dead RPC → latest falls back to cursor_ledger.
+        // confirmed_tip = cursor - lag ≤ cursor → early return.
+        let cursor: u32 = 200;
+        let next = client.sync_once(cursor).await.unwrap();
+        assert_eq!(
+            next, cursor,
+            "cursor must be idempotent when already at confirmed tip (got {next}, want {cursor})"
+        );
+    }
+
+    /// Across multiple consecutive sync cycles with a dead RPC the cursor must
+    /// never rewind below its starting value.  Guards against any regression
+    /// where a silent empty response causes the cursor to go backwards.
+    #[tokio::test]
+    async fn test_cursor_never_rewinds_across_multiple_empty_sync_cycles() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!("Skipping test_cursor_never_rewinds_across_multiple_empty_sync_cycles: Redis unavailable");
+                return;
+            }
+        };
+
+        let initial: u32 = 1_000;
+        let mut cursor = initial;
+
+        for round in 0..5u32 {
+            let next = client.sync_once(cursor).await.unwrap();
+            assert!(
+                next >= initial,
+                "cursor rewound on round {round}: started at {initial}, became {next}"
+            );
+            cursor = next;
+        }
+    }
+
+    /// fetch_events_since must return Ok(vec![]) – not an error – when the RPC
+    /// is unreachable, and the silent fallback must be recorded in the
+    /// rpc_errors_total metric so operators can detect the failure.
+    #[tokio::test]
+    async fn test_empty_event_stream_on_rpc_failure_is_recorded_in_metrics() {
+        let mut config = Config::from_env();
+        config.blockchain_rpc_url = "http://127.0.0.1:0".to_string();
+        config.retry_attempts = 1;
+        config.retry_base_delay_ms = 1;
+        config.sync_market_ids = vec![];
+
+        let metrics = Metrics::new().unwrap();
+        let cache = match RedisCache::new(&config.redis_url).await {
+            Ok(c) => c,
+            Err(_) => {
+                println!("Skipping test_empty_event_stream_on_rpc_failure_is_recorded_in_metrics: Redis unavailable");
+                return;
+            }
+        };
+
+        let client = BlockchainClient::new(&config, cache, metrics.clone()).unwrap();
+
+        // RPC failure must be masked – the call must succeed with an empty list.
+        let events = client.fetch_events_since(100).await.unwrap();
+        assert!(
+            events.is_empty(),
+            "RPC failure must produce an empty event list, not propagate an error"
+        );
+
+        // The silent fallback must be observable via metrics.
+        let rendered = metrics.render().unwrap();
+        assert!(
+            rendered.contains("rpc_errors_total{method=\"getEvents\"} 1"),
+            "silent empty-stream fallback must increment rpc_errors_total for getEvents"
+        );
+    }
+
+    /// sync_once must return Ok (not Err) when the RPC is unreachable, so the
+    /// run_sync_worker loop takes the Ok branch and preserves the cursor.
+    #[tokio::test]
+    async fn test_sync_once_returns_ok_not_err_on_rpc_failure() {
+        let client = match make_dead_rpc_client().await {
+            Some(c) => c,
+            None => {
+                println!(
+                    "Skipping test_sync_once_returns_ok_not_err_on_rpc_failure: Redis unavailable"
+                );
+                return;
+            }
+        };
+
+        let result = client.sync_once(300).await;
+        assert!(
+            result.is_ok(),
+            "sync_once must return Ok on RPC failure so the worker loop preserves the cursor"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Event parsing – malformed payload fuzz / quarantine tests
+    // -------------------------------------------------------------------------
+
+    /// Helper: build a minimal valid event JSON.
+    fn valid_event() -> Value {
+        json!({ "id": "evt-1", "ledger": 100, "topic": "bet", "txHash": "0xabc" })
+    }
+
+    #[test]
+    fn test_parse_event_valid() {
+        let ev = BlockchainClient::parse_event(valid_event()).unwrap();
+        assert_eq!(ev.id, "evt-1");
+        assert_eq!(ev.ledger, 100);
+    }
+
+    #[test]
+    fn test_parse_event_missing_id_is_quarantined() {
+        let e = json!({ "ledger": 100, "topic": "bet" });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_empty_id_is_quarantined() {
+        let e = json!({ "id": "", "ledger": 100 });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_missing_ledger_is_quarantined() {
+        let e = json!({ "id": "evt-2", "topic": "bet" });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_zero_ledger_is_quarantined() {
+        let e = json!({ "id": "evt-3", "ledger": 0 });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_null_id_is_quarantined() {
+        let e = json!({ "id": null, "ledger": 100 });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_null_ledger_is_quarantined() {
+        let e = json!({ "id": "evt-4", "ledger": null });
+        assert!(BlockchainClient::parse_event(e).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_completely_empty_is_quarantined() {
+        assert!(BlockchainClient::parse_event(json!({})).is_none());
+    }
+
+    #[test]
+    fn test_parse_event_non_object_is_quarantined() {
+        for bad in [json!(null), json!(42), json!("string"), json!([])] {
+            assert!(
+                BlockchainClient::parse_event(bad.clone()).is_none(),
+                "expected quarantine for {bad}"
+            );
+        }
+    }
+
+    /// Fuzz a batch: mix of valid and malformed events; only valid ones survive.
+    #[test]
+    fn test_parse_event_batch_filters_malformed() {
+        let inputs = vec![
+            json!({ "id": "good-1", "ledger": 50 }),
+            json!({ "ledger": 50 }),                    // missing id
+            json!({ "id": "", "ledger": 50 }),           // empty id
+            json!({ "id": "good-2", "ledger": 99 }),
+            json!({ "id": "bad", "ledger": 0 }),         // zero ledger
+            json!({ "id": null, "ledger": 10 }),         // null id
+            json!({ "id": "good-3", "ledger": 1 }),
+        ];
+
+        let parsed: Vec<_> = inputs
+            .into_iter()
+            .filter_map(BlockchainClient::parse_event)
+            .collect();
+
+        assert_eq!(parsed.len(), 3);
+        assert_eq!(parsed[0].id, "good-1");
+        assert_eq!(parsed[1].id, "good-2");
+        assert_eq!(parsed[2].id, "good-3");
+    }
+
+    // -------------------------------------------------------------------------
+    // Background tx monitor – race conditions and duplicate hash tracking
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_watch_transaction_deduplicates() {
+        let state = MonitoringState::default();
+        state.watched_txs.write().await.insert("hash-a".to_string());
+        state.watched_txs.write().await.insert("hash-a".to_string());
+        assert_eq!(state.watched_txs.read().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_watch_leaves_consistent_set() {
+        let state = Arc::new(MonitoringState::default());
+        let hashes = ["tx-1", "tx-2", "tx-3", "tx-4", "tx-5"];
+
+        // Spawn concurrent writers.
+        let handles: Vec<_> = hashes
+            .iter()
+            .map(|h| {
+                let s = state.clone();
+                let h = h.to_string();
+                tokio::spawn(async move {
+                    s.watched_txs.write().await.insert(h);
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.await.unwrap();
+        }
+
+        let set = state.watched_txs.read().await;
+        assert_eq!(set.len(), hashes.len());
+        for h in &hashes {
+            assert!(set.contains(*h), "missing {h}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_watch_and_remove_leaves_consistent_set() {
+        let state = Arc::new(MonitoringState::default());
+
+        // Pre-populate.
+        for h in ["tx-a", "tx-b", "tx-c", "tx-d"] {
+            state.watched_txs.write().await.insert(h.to_string());
+        }
+
+        // Concurrently: add new hashes while removing finalized ones.
+        let add = {
+            let s = state.clone();
+            tokio::spawn(async move {
+                for h in ["tx-e", "tx-f"] {
+                    s.watched_txs.write().await.insert(h.to_string());
+                }
+            })
+        };
+
+        let remove = {
+            let s = state.clone();
+            tokio::spawn(async move {
+                // Simulate monitor removing finalized txs.
+                for h in ["tx-a", "tx-b"] {
+                    s.watched_txs.write().await.remove(h);
+                }
+            })
+        };
+
+        add.await.unwrap();
+        remove.await.unwrap();
+
+        let set = state.watched_txs.read().await;
+        // tx-c, tx-d remain; tx-e, tx-f were added; tx-a, tx-b removed.
+        assert_eq!(set.len(), 4);
+        assert!(!set.contains("tx-a"));
+        assert!(!set.contains("tx-b"));
+        for h in ["tx-c", "tx-d", "tx-e", "tx-f"] {
+            assert!(set.contains(h), "missing {h}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_monitor_does_not_remove_pending_or_not_found() {
+        let state = Arc::new(MonitoringState::default());
+        state.watched_txs.write().await.insert("tx-pending".to_string());
+        state.watched_txs.write().await.insert("tx-not-found".to_string());
+
+        // Simulate one monitor tick: only remove when status is terminal.
+        let hashes: Vec<String> = state.watched_txs.read().await.iter().cloned().collect();
+        for hash in hashes {
+            let status = if hash == "tx-pending" { "PENDING" } else { "NOT_FOUND" };
+            if status != "NOT_FOUND" && status != "PENDING" {
+                state.watched_txs.write().await.remove(&hash);
+            }
+        }
+
+        let set = state.watched_txs.read().await;
+        assert_eq!(set.len(), 2, "PENDING and NOT_FOUND must not be removed");
+    }
+
+    #[tokio::test]
+    async fn test_monitor_removes_terminal_status() {
+        let state = Arc::new(MonitoringState::default());
+        for h in ["tx-success", "tx-failed", "tx-pending"] {
+            state.watched_txs.write().await.insert(h.to_string());
+        }
+
+        let terminal_statuses = [
+            ("tx-success", "SUCCESS"),
+            ("tx-failed", "FAILED"),
+            ("tx-pending", "PENDING"),
+        ];
+
+        for (hash, status) in terminal_statuses {
+            if status != "NOT_FOUND" && status != "PENDING" {
+                state.watched_txs.write().await.remove(hash);
+            }
+        }
+
+        let set = state.watched_txs.read().await;
+        assert!(!set.contains("tx-success"), "SUCCESS must be removed");
+        assert!(!set.contains("tx-failed"), "FAILED must be removed");
+        assert!(set.contains("tx-pending"), "PENDING must stay");
     }
 }
