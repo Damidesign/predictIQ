@@ -215,7 +215,7 @@ pub async fn run() -> anyhow::Result<()> {
         .route("/api/markets/featured", get(handlers::featured_markets))
         .route("/api/content", get(handlers::content))
         .layer(middleware::from_fn_with_state(
-            rate_limiter.clone(),
+            (rate_limiter.clone(), TrustProxy(config.trust_proxy)),
             security::global_rate_limit_middleware,
         ))
         .with_state(state.clone());
@@ -242,11 +242,15 @@ pub async fn run() -> anyhow::Result<()> {
             axum::routing::delete(handlers::newsletter_gdpr_delete),
         )
         .layer(middleware::from_fn_with_state(
-            rate_limiter.clone(),
+            (rate_limiter.clone(), TrustProxy(config.trust_proxy)),
             rate_limit::newsletter_rate_limit_middleware,
         ))
         .with_state(state.clone());
 
+    // Admin routes require API key authentication (if configured) and IP whitelisting (if configured).
+    // When API_KEYS is set, requests must include a valid x-api-key header.
+    // When ADMIN_WHITELIST_IPS is set, only whitelisted IPs can access admin endpoints.
+    // Invalid API key returns 401 Unauthorized, non-whitelisted IPs return 403 Forbidden.
     let admin_routes = Router::new()
         .route(
             "/api/markets/:market_id/resolve",
