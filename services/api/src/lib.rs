@@ -29,7 +29,7 @@ use db::Database;
 use email::{queue::EmailQueue, service::EmailService, webhook::WebhookHandler};
 use metrics::Metrics;
 use newsletter::IpRateLimiter;
-use security::{ApiKeyAuth, IpWhitelist, RateLimiter, TrustProxy};
+use security::{ApiKeyAuth, IpWhitelist, MetricsAuthConfig, RateLimiter, TrustProxy};
 use shutdown::ShutdownCoordinator;
 use tokio::net::TcpListener;
 use tower_http::{
@@ -79,6 +79,11 @@ pub async fn run() -> anyhow::Result<()> {
     let rate_limiter = Arc::new(RateLimiter::new());
     let api_key_auth = Arc::new(ApiKeyAuth::new(config.api_keys.clone()));
     let _ip_whitelist = Arc::new(IpWhitelist::new(config.admin_whitelist_ips.clone()));
+    let metrics_auth = Arc::new(MetricsAuthConfig::new(
+        config.metrics_public,
+        config.metrics_allowlist_ips.clone(),
+        api_key_auth.clone(),
+    ));
 
     // Setup shutdown coordination for 3 workers: rate limiter cleanup, blockchain (2), email queue
     let shutdown_coordinator = ShutdownCoordinator::new(4);
@@ -188,7 +193,6 @@ pub async fn run() -> anyhow::Result<()> {
 
     let public_routes = Router::new()
         .route("/health", get(handlers::health))
-        .route("/metrics", get(handlers::metrics))
         .route("/api/blockchain/health", get(handlers::blockchain_health))
         .route(
             "/api/blockchain/markets/:market_id",
@@ -283,10 +287,22 @@ pub async fn run() -> anyhow::Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
+    // Metrics endpoint — protected by API key + optional IP allowlist.
+    // Set METRICS_PUBLIC=true to disable auth (only for trusted internal networks).
+    // Set METRICS_ALLOWLIST_IPS=<comma-separated IPs> to restrict by source IP.
+    let metrics_routes = Router::new()
+        .route("/metrics", get(handlers::metrics))
+        .layer(middleware::from_fn_with_state(
+            metrics_auth,
+            security::metrics_auth_middleware,
+        ))
+        .with_state(state.clone());
+
     let app = public_routes
         .merge(newsletter_routes)
         .merge(admin_routes)
         .merge(webhook_routes)
+        .merge(metrics_routes)
         .layer(middleware::from_fn(validation::request_validation_middleware))
         .layer(middleware::from_fn(
             validation::content_type_validation_middleware,

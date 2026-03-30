@@ -342,6 +342,68 @@ pub async fn ip_whitelist_middleware(
     Ok(next.run(request).await)
 }
 
+/// Configuration for the metrics endpoint access control.
+///
+/// - `public`: skip all auth checks (only for trusted/internal networks).
+/// - `allowlist`: when non-empty, the caller's IP must be in this list.
+/// - `auth`: API key validator; checked when `public` is false.
+#[derive(Clone)]
+pub struct MetricsAuthConfig {
+    pub public: bool,
+    pub allowlist: Arc<Vec<IpAddr>>,
+    pub auth: Arc<ApiKeyAuth>,
+}
+
+impl MetricsAuthConfig {
+    pub fn new(public: bool, allowlist: Vec<IpAddr>, auth: Arc<ApiKeyAuth>) -> Self {
+        Self {
+            public,
+            allowlist: Arc::new(allowlist),
+            auth,
+        }
+    }
+}
+
+/// Metrics endpoint authentication middleware.
+///
+/// Access is granted when ANY of the following is true:
+/// 1. `config.public == true` (opt-in public mode, e.g. internal cluster).
+/// 2. The caller's IP is in `config.allowlist` AND a valid API key is present.
+/// 3. `config.allowlist` is empty AND a valid API key is present.
+pub async fn metrics_auth_middleware(
+    State(config): State<Arc<MetricsAuthConfig>>,
+    headers: HeaderMap,
+    connect_info: Option<ConnectInfo<std::net::SocketAddr>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    if config.public {
+        return Ok(next.run(request).await);
+    }
+
+    // IP allowlist check (when configured)
+    if !config.allowlist.is_empty() {
+        // Use empty CIDR list — allowlist check uses direct IP comparison, not proxy headers
+        let ip = extract_client_ip(&headers, connect_info.as_ref(), &[]);
+        let parsed: Option<IpAddr> = ip.parse().ok();
+        let allowed = parsed.map(|a| config.allowlist.contains(&a)).unwrap_or(false);
+        if !allowed {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
+
+    // API key check
+    let api_key = headers
+        .get("x-api-key")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("");
+    if !config.auth.verify(api_key) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    Ok(next.run(request).await)
+}
+
 /// SendGrid webhook signature verification middleware.
 ///
 /// Verifies the `X-Twilio-Email-Event-Webhook-Signature` header using HMAC-SHA256
@@ -526,10 +588,10 @@ mod tests {
         let headers = HeaderMap::new();
 
         // No headers, no connect info
-        assert_eq!(extract_client_ip(&headers, None), "unknown");
+        assert_eq!(extract_client_ip(&headers, None, &[]), "unknown");
 
         let ci = addr("5.5.5.5:80");
-        assert_eq!(extract_client_ip(&headers, Some(&ci), true), "5.5.5.5");
+        assert_eq!(extract_client_ip(&headers, Some(&ci), &[]), "5.5.5.5");
     }
 
     #[test]
@@ -575,6 +637,6 @@ mod tests {
             "2001:db8::1, 192.168.1.1".parse().unwrap(),
         );
 
-        assert_eq!(extract_client_ip(&headers, None), "2001:db8::1");
+        assert_eq!(extract_client_ip(&headers, None, &[]), "2001:db8::1");
     }
 }
