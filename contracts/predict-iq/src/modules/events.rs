@@ -193,3 +193,31 @@ pub fn emit_monitoring_state_reset(
         (previous_error_count, previous_last_observation),
     );
 }
+
+pub fn emit_upgrade_initiated(e: &Env, initiator: Address, wasm_hash: soroban_sdk::BytesN<32>) {
+    e.events().publish(
+        (symbol_short!("upg_init"), initiator),
+        wasm_hash,
+    );
+}
+
+pub fn emit_upgrade_voted(e: &Env, voter: Address, vote_for: bool) {
+    e.events().publish(
+        (symbol_short!("upg_vote"), voter),
+        vote_for,
+    );
+}
+
+pub fn emit_upgrade_executed(e: &Env, executor: Address, wasm_hash: soroban_sdk::BytesN<32>) {
+    e.events().publish(
+        (symbol_short!("upg_exec"), executor),
+        wasm_hash,
+    );
+}
+
+pub fn emit_upgrade_rejected(e: &Env, wasm_hash: soroban_sdk::BytesN<32>) {
+    e.events().publish(
+        (symbol_short!("upg_rej"),),
+        wasm_hash,
+    );
+}

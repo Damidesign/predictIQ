@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Map, String, Vec};
+use soroban_sdk::{contracttype, Address, BytesN, Map, String, Vec};
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -114,6 +114,8 @@ pub enum ConfigKey {
     PendingUpgrade,
     UpgradeVotes,
     TimelockDuration,
+    PendingGuardianRemoval,
+    UpgradeRejectedAt(BytesN<32>),
 }
 
 #[contracttype]
@@ -136,7 +138,7 @@ pub struct Guardian {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingUpgrade {
-    pub wasm_hash: String,
+    pub wasm_hash: BytesN<32>,
     pub initiated_at: u64,
     pub votes_for: Vec<Address>,
     pub votes_against: Vec<Address>,
@@ -147,20 +149,20 @@ pub const TIMELOCK_DURATION: u64 = 48 * 60 * 60; // 48 hours in seconds
 pub const TIMELOCK_MIN_SECONDS: u64 = 3600; // 1 hour minimum
 pub const TIMELOCK_MAX_SECONDS: u64 = 7 * 24 * 3600; // 7 days maximum
 pub const MAJORITY_THRESHOLD_PERCENT: u32 = 51; // 51% for majority
+pub const UPGRADE_COOLDOWN_DURATION: u64 = 24 * 60 * 60; // 24 hours cooldown after rejection
 
 // Governance stats and pending removal types
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpgradeStats {
-    pub total_upgrades: u32,
-    pub last_upgrade_at: u64,
-    pub last_wasm_hash: String,
+    pub votes_for: u32,
+    pub votes_against: u32,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PendingGuardianRemoval {
-    pub address: Address,
+    pub target_guardian: Address,
     pub initiated_at: u64,
     pub votes_for: Vec<Address>,
 }
@@ -169,3 +171,7 @@ pub struct PendingGuardianRemoval {
 pub const TTL_LOW_THRESHOLD: u32 = 17_280; // ~1 day (86400 seconds / 5)
 pub const TTL_HIGH_THRESHOLD: u32 = 518_400; // ~30 days (2592000 seconds / 5)
 pub const PRUNE_GRACE_PERIOD: u64 = 2_592_000; // 30 days in seconds
+
+// Governance TTL constants (same values, governance-specific aliases)
+pub const GOV_TTL_LOW_THRESHOLD: u32 = TTL_LOW_THRESHOLD;
+pub const GOV_TTL_HIGH_THRESHOLD: u32 = TTL_HIGH_THRESHOLD;
